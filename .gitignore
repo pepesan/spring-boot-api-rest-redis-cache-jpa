@@ -40,3 +40,6 @@ out/
 .claude/*
 CLAUDE.md
 
+## Docker data
+docker/data/
+
