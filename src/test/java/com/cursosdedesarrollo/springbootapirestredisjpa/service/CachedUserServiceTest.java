@@ -10,7 +10,6 @@ import com.cursosdedesarrollo.springbootapirestredisjpa.repository.UserRepositor
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
@@ -40,14 +39,22 @@ class CachedUserServiceTest {
     @Mock
     private ReactiveValueOperations<String, UserResponse> valueOps;
 
-    @InjectMocks
+    @Mock
+    private ReactiveRedisTemplate<String, List<UserResponse>> userListRedisTemplate;
+
+    @Mock
+    private ReactiveValueOperations<String, List<UserResponse>> listValueOps;
+
+    // Inyección manual: @InjectMocks no distingue dos ReactiveRedisTemplate del mismo tipo crudo
+    // (erasure borra los genéricos en runtime) e inyectaría el mock equivocado en uno de los campos.
     private CachedUserService cachedUserService;
 
     @BeforeEach
     void setUp() {
-        // lenient: algunos tests no usan opsForValue() (findAll, delete) y Mockito strict mode
-        // lanzaría UnnecessaryStubbingException si fuera un stub estricto.
+        cachedUserService = new CachedUserService(userRepository, userRedisTemplate, userListRedisTemplate);
         lenient().when(userRedisTemplate.opsForValue()).thenReturn(valueOps);
+        lenient().when(userListRedisTemplate.opsForValue()).thenReturn(listValueOps);
+        lenient().when(userListRedisTemplate.delete("user:all")).thenReturn(Mono.just(1L));
     }
 
     private User sampleUser() {
@@ -72,6 +79,45 @@ class CachedUserServiceTest {
                 .createdAt(LocalDateTime.now())
                 .updatedAt(LocalDateTime.now())
                 .build();
+    }
+
+    // --- findAll: cache hit ---
+
+    @Test
+    void findAll_cacheHit_returnsFromRedisWithoutCallingRepository() {
+        when(listValueOps.get("user:all")).thenReturn(Mono.just(List.of(sampleResponse())));
+
+        StepVerifier.create(cachedUserService.findAll())
+                .assertNext(u -> assertThat(u.getUsername()).isEqualTo("john"))
+                .verifyComplete();
+
+        verify(userRepository, never()).findAll();
+    }
+
+    // --- findAll: cache miss ---
+
+    @Test
+    void findAll_cacheMiss_queriesJpaAndPopulatesCache() {
+        when(listValueOps.get("user:all")).thenReturn(Mono.empty());
+        when(userRepository.findAll()).thenReturn(List.of(sampleUser()));
+        when(listValueOps.set(eq("user:all"), any(), any(Duration.class))).thenReturn(Mono.just(true));
+
+        StepVerifier.create(cachedUserService.findAll())
+                .assertNext(u -> assertThat(u.getUsername()).isEqualTo("john"))
+                .verifyComplete();
+
+        verify(userRepository).findAll();
+        verify(listValueOps).set(eq("user:all"), any(), any(Duration.class));
+    }
+
+    @Test
+    void findAll_cacheHitEmptyList_returnsEmptyWithoutCallingRepository() {
+        when(listValueOps.get("user:all")).thenReturn(Mono.just(List.of()));
+
+        StepVerifier.create(cachedUserService.findAll())
+                .verifyComplete();
+
+        verify(userRepository, never()).findAll();
     }
 
     // --- findById: cache hit ---
@@ -119,7 +165,7 @@ class CachedUserServiceTest {
     // --- create ---
 
     @Test
-    void create_validRequest_savesToJpaAndPopulatesCache() {
+    void create_validRequest_savesToJpaAndPopulatesCacheAndInvalidatesList() {
         CreateUserRequest request = new CreateUserRequest("john", "john@example.com", "John", "Doe");
         when(userRepository.existsByUsername("john")).thenReturn(false);
         when(userRepository.existsByEmail("john@example.com")).thenReturn(false);
@@ -132,6 +178,7 @@ class CachedUserServiceTest {
                 .verifyComplete();
 
         verify(valueOps).set(eq("user:1"), any(UserResponse.class), any(Duration.class));
+        verify(userListRedisTemplate).delete("user:all");
     }
 
     @Test
@@ -143,12 +190,13 @@ class CachedUserServiceTest {
                 .verify();
 
         verify(valueOps, never()).set(any(), any(), any(Duration.class));
+        verify(userListRedisTemplate, never()).delete(any(String.class));
     }
 
     // --- update ---
 
     @Test
-    void update_existingUser_updatesJpaAndOverwritesCache() {
+    void update_existingUser_updatesJpaAndOverwritesCacheAndInvalidatesList() {
         UpdateUserRequest request = new UpdateUserRequest("johnny", null, null, null);
         User updated = sampleUser();
         updated.setUsername("johnny");
@@ -164,6 +212,7 @@ class CachedUserServiceTest {
                 .verifyComplete();
 
         verify(valueOps).set(eq("user:1"), any(UserResponse.class), any(Duration.class));
+        verify(userListRedisTemplate).delete("user:all");
     }
 
     @Test
@@ -173,12 +222,14 @@ class CachedUserServiceTest {
         StepVerifier.create(cachedUserService.update(99L, new UpdateUserRequest()))
                 .expectError(UserNotFoundException.class)
                 .verify();
+
+        verify(userListRedisTemplate, never()).delete(any(String.class));
     }
 
     // --- delete ---
 
     @Test
-    void delete_existingId_deletesFromJpaAndEvictsCache() {
+    void delete_existingId_deletesFromJpaAndEvictsCacheAndInvalidatesList() {
         when(userRepository.existsById(1L)).thenReturn(true);
         doNothing().when(userRepository).deleteById(1L);
         when(userRedisTemplate.delete("user:1")).thenReturn(Mono.just(1L));
@@ -188,6 +239,7 @@ class CachedUserServiceTest {
 
         verify(userRepository).deleteById(1L);
         verify(userRedisTemplate).delete("user:1");
+        verify(userListRedisTemplate).delete("user:all");
     }
 
     @Test
@@ -199,16 +251,6 @@ class CachedUserServiceTest {
                 .verify();
 
         verify(userRedisTemplate, never()).delete(any(String.class));
-    }
-
-    // --- findAll ---
-
-    @Test
-    void findAll_returnsAllUsersFromJpa() {
-        when(userRepository.findAll()).thenReturn(List.of(sampleUser()));
-
-        StepVerifier.create(cachedUserService.findAll())
-                .assertNext(u -> assertThat(u.getUsername()).isEqualTo("john"))
-                .verifyComplete();
+        verify(userListRedisTemplate, never()).delete(any(String.class));
     }
 }

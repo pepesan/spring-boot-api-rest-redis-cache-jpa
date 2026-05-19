@@ -1,5 +1,6 @@
 package com.cursosdedesarrollo.springbootapirestredisjpa.handler;
 
+import com.cursosdedesarrollo.springbootapirestredisjpa.exception.CustomerNotFoundException;
 import com.cursosdedesarrollo.springbootapirestredisjpa.exception.ProductNotFoundException;
 import com.cursosdedesarrollo.springbootapirestredisjpa.exception.UserAlreadyExistsException;
 import com.cursosdedesarrollo.springbootapirestredisjpa.exception.UserNotFoundException;
@@ -28,6 +29,12 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ProductNotFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public Mono<ErrorResponse> handleProductNotFound(ProductNotFoundException ex, ServerWebExchange exchange) {
+        return buildError(HttpStatus.NOT_FOUND, ex.getMessage(), exchange, null);
+    }
+
+    @ExceptionHandler(CustomerNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public Mono<ErrorResponse> handleCustomerNotFound(CustomerNotFoundException ex, ServerWebExchange exchange) {
         return buildError(HttpStatus.NOT_FOUND, ex.getMessage(), exchange, null);
     }
 

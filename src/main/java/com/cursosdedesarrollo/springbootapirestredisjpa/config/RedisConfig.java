@@ -11,6 +11,9 @@ import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import tools.jackson.databind.cfg.DateTimeFeature;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.type.TypeFactory;
+
+import java.util.List;
 
 @Configuration
 public class RedisConfig {
@@ -45,6 +48,25 @@ public class RedisConfig {
 
         RedisSerializationContext<String, UserResponse> context =
                 RedisSerializationContext.<String, UserResponse>newSerializationContext(new StringRedisSerializer())
+                        .value(valueSerializer)
+                        .build();
+
+        return new ReactiveRedisTemplate<>(factory, context);
+    }
+
+    @Bean
+    public ReactiveRedisTemplate<String, List<UserResponse>> userListRedisTemplate(ReactiveRedisConnectionFactory factory) {
+
+        JsonMapper mapper = JsonMapper.builder()
+                .disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .build();
+        // TypeFactory resuelve el genérico en tiempo de compilación: List<UserResponse> en vez de List cruda.
+        // Sin esto Jackson deserializaría los elementos como LinkedHashMap en lugar de UserResponse.
+        JacksonJsonRedisSerializer<List<UserResponse>> valueSerializer = new JacksonJsonRedisSerializer<>(mapper,
+                TypeFactory.createDefaultInstance().constructCollectionType(List.class, UserResponse.class));
+
+        RedisSerializationContext<String, List<UserResponse>> context =
+                RedisSerializationContext.<String, List<UserResponse>>newSerializationContext(new StringRedisSerializer())
                         .value(valueSerializer)
                         .build();
 

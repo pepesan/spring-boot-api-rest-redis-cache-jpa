@@ -20,6 +20,14 @@ public class UserService {
     private final UserRepository userRepository;
 
     public Flux<UserResponse> findAll() {
+        // JPA (JDBC) es bloqueante: el hilo espera hasta recibir la respuesta de la base de datos.
+        // En WebFlux el event loop de Netty no debe bloquearse nunca — si lo hace, ninguna otra
+        // petición puede procesarse mientras tanto.
+        //
+        // Solución: Mono.fromCallable() envuelve la llamada bloqueante en un Mono sin ejecutarla
+        // todavía. subscribeOn(Schedulers.boundedElastic()) indica que, cuando alguien se suscriba,
+        // la ejecución debe ocurrir en el pool boundedElastic, que está diseñado para I/O bloqueante.
+        // El event loop queda libre y retoma el control en cuanto el pool termina.
         return Mono.fromCallable(userRepository::findAll)
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapIterable(users -> users)
@@ -27,6 +35,9 @@ public class UserService {
     }
 
     public Mono<UserResponse> findById(Long id) {
+        // fromCallable admite checked exceptions y devuelve el resultado directamente como elemento del Mono.
+        // orElseThrow lanza UserNotFoundException si el Optional está vacío; fromCallable lo captura
+        // y lo convierte en onError, que GlobalExceptionHandler traduce a 404.
         return Mono.fromCallable(() -> userRepository.findById(id)
                         .orElseThrow(() -> new UserNotFoundException(id)))
                 .subscribeOn(Schedulers.boundedElastic())
@@ -34,6 +45,9 @@ public class UserService {
     }
 
     public Mono<UserResponse> create(CreateUserRequest request) {
+        // Todas las llamadas JPA del método se agrupan en un único fromCallable.
+        // Si se hiciesen en fromCallable separados, cada uno necesitaría su propio subscribeOn,
+        // lo que provocaría varios saltos de scheduler para operaciones que son síncronas entre sí.
         return Mono.fromCallable(() -> {
             if (userRepository.existsByUsername(request.getUsername())) {
                 throw new UserAlreadyExistsException("username", request.getUsername());
@@ -52,6 +66,7 @@ public class UserService {
     }
 
     public Mono<UserResponse> update(Long id, UpdateUserRequest request) {
+        // Mismo patrón que create: un único bloque fromCallable agrupa todas las llamadas JPA.
         return Mono.fromCallable(() -> {
             User user = userRepository.findById(id)
                     .orElseThrow(() -> new UserNotFoundException(id));
@@ -78,6 +93,8 @@ public class UserService {
     }
 
     public Mono<Void> delete(Long id) {
+        // fromRunnable en lugar de fromCallable: deleteById devuelve void, no hay valor que emitir.
+        // fromCallable requiere un valor de retorno; fromRunnable no.
         return Mono.fromRunnable(() -> {
             if (!userRepository.existsById(id)) {
                 throw new UserNotFoundException(id);

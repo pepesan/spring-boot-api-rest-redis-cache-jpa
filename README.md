@@ -152,6 +152,81 @@ curl -s -X DELETE http://localhost:8080/api/products/$PRODUCT_ID -w "HTTP %{http
 - `price`: requerido en creación, debe ser positivo
 - `stock`: requerido en creación, debe ser cero o positivo
 
+## API REST — Clientes (Redis Hash)
+
+Base URL: `http://localhost:8080/api/customers`
+
+Los clientes se almacenan en Redis usando el tipo **Hash**: cada campo del objeto (`name`, `email`, `phone`, `loyaltyPoints`) es una entrada independiente dentro de la clave `customer:{uuid}`. A diferencia del tipo String (que serializa el objeto completo como JSON), Hash permite leer o modificar un campo concreto sin tocar el resto.
+
+> Para usar este endpoint la aplicación necesita Redis corriendo. Levántalo con `./docker/01_launch.sh`.
+
+### Endpoints
+
+| Método | Ruta | Descripción | Respuesta |
+|--------|------|-------------|-----------|
+| GET | `/api/customers` | Listar todos los clientes | `200 OK` — `Flux<CustomerResponse>` |
+| GET | `/api/customers/{id}` | Obtener cliente por ID | `200 OK` / `404 Not Found` |
+| POST | `/api/customers` | Crear cliente | `201 Created` + `Location` header |
+| PUT | `/api/customers/{id}` | Actualizar cliente (campos opcionales) | `200 OK` / `404` |
+| PATCH | `/api/customers/{id}/loyalty?delta=N` | Sumar (o restar) puntos de fidelidad | `200 OK` / `404` |
+| DELETE | `/api/customers/{id}` | Eliminar cliente | `204 No Content` / `404 Not Found` |
+
+El endpoint `PATCH /loyalty` usa `HINCRBY` internamente: Redis incrementa el campo `loyaltyPoints` de forma atómica sin necesidad de leer ni reescribir el hash completo. Con `delta` negativo se canean puntos.
+
+### Ejemplos curl
+
+```bash
+# 1. Crear cliente y guardar el ID
+CUSTOMER_ID=$(curl -s -X POST http://localhost:8080/api/customers \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Ana García","email":"ana@example.com","phone":"612345678"}' \
+  | jq -r '.id')
+echo "Cliente creado: $CUSTOMER_ID"
+
+# 2. Obtener por ID
+curl -s http://localhost:8080/api/customers/$CUSTOMER_ID | jq
+
+# 3. Actualizar nombre
+curl -s -X PUT http://localhost:8080/api/customers/$CUSTOMER_ID \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Ana G."}' | jq
+
+# 4. Sumar 100 puntos de fidelidad (HINCRBY atómico)
+curl -s -X PATCH "http://localhost:8080/api/customers/$CUSTOMER_ID/loyalty?delta=100" | jq
+
+# 5. Canjear 30 puntos (delta negativo)
+curl -s -X PATCH "http://localhost:8080/api/customers/$CUSTOMER_ID/loyalty?delta=-30" | jq
+
+# 6. Eliminar
+curl -s -X DELETE http://localhost:8080/api/customers/$CUSTOMER_ID -w "HTTP %{http_code}\n"
+```
+
+### Inspección con Redis CLI
+
+```bash
+alias rcli='docker exec redis-dev redis-cli'
+
+# Ver todos los campos del hash de un cliente
+rcli HGETALL "customer:$CUSTOMER_ID"
+
+# Leer solo el campo loyaltyPoints
+rcli HGET "customer:$CUSTOMER_ID" loyaltyPoints
+
+# Ver todas las claves de cliente
+rcli KEYS "customer:*"
+```
+
+### String vs Hash: la diferencia clave
+
+| | Producto (String) | Cliente (Hash) |
+|---|---|---|
+| Almacenamiento | `SET key jsonCompleto` | `HSET key campo1 val1 ...` |
+| Leer un campo | GET + deserializar JSON | `HGET key campo` |
+| Modificar un campo | GET → modificar → SET | `HSET key campo nuevoValor` |
+| Incremento atómico | Imposible sin race condition | `HINCRBY key campo delta` |
+
+---
+
 ## API REST — Usuarios con caché Redis (`/api/v2/users`)
 
 Base URL: `http://localhost:8080/api/v2/users`
@@ -160,11 +235,11 @@ Este controlador expone el mismo CRUD de usuarios que `/api/users` pero añade u
 
 | Operación | Comportamiento |
 |---|---|
-| `GET /{id}` | Primero busca en Redis (`user:{id}`). Si no existe (cache miss), va a H2, guarda el resultado en Redis con TTL de 10 min y lo devuelve. |
-| `GET /` | Sin caché — la lista completa se recarga siempre de H2. |
-| `POST /` | Guarda en H2 y puebla Redis con el objeto persistido. |
-| `PUT /{id}` | Actualiza H2 y sobreescribe la entrada en Redis. |
-| `DELETE /{id}` | Elimina de H2 y hace evict explícito de Redis. |
+| `GET /{id}` | Busca en Redis (`user:{id}`). Cache miss → va a H2, guarda en Redis con TTL de 10 min y devuelve. |
+| `GET /` | Busca en Redis (`user:all`). Cache miss → va a H2, guarda la lista en Redis con TTL de 10 min y devuelve. |
+| `POST /` | Guarda en H2, puebla `user:{id}` en Redis e invalida `user:all`. |
+| `PUT /{id}` | Actualiza H2, sobreescribe `user:{id}` en Redis e invalida `user:all`. |
+| `DELETE /{id}` | Elimina de H2, hace evict de `user:{id}` y de `user:all`. |
 
 > Requiere Redis corriendo. Levántalo con `./docker/01_launch.sh`.
 
@@ -301,8 +376,10 @@ Los tests **no requieren Redis** (se excluye via `spring.autoconfigure.exclude` 
 |---|---|---|
 | `UserServiceTest` | Unitario (Mockito) | Lógica de negocio de usuarios sin caché |
 | `UserControllerTest` | Slice (`@WebFluxTest`) | HTTP layer de `/api/users` |
-| `CachedUserServiceTest` | Unitario (Mockito) | Cache-aside: hit, miss, evict; verifica interacción con `ReactiveRedisTemplate` |
+| `CachedUserServiceTest` | Unitario (Mockito) | Cache-aside: hit/miss en `findById` y `findAll`, invalidación de lista en writes, evict en delete |
 | `CachedUserControllerTest` | Slice (`@WebFluxTest`) | HTTP layer de `/api/v2/users` |
-| `ProductServiceTest` | Unitario (Mockito) | Lógica de negocio de productos (Redis) |
+| `ProductServiceTest` | Unitario (Mockito) | Lógica de negocio de productos (Redis como persistencia) |
 | `ProductControllerTest` | Slice (`@WebFluxTest`) | HTTP layer de `/api/products` |
+| `CustomerServiceTest` | Unitario (Mockito) | Lógica de negocio de clientes: CRUD y `addLoyaltyPoints` (HINCRBY) |
+| `CustomerControllerTest` | Slice (`@WebFluxTest`) | HTTP layer de `/api/customers`, incluyendo `PATCH /loyalty` |
 | `SpringBootApiRestRedisJpaApplicationTests` | Contexto | Verifica que el contexto arranca |
