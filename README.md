@@ -4,13 +4,13 @@ API REST reactiva construida con Spring Boot 4, WebFlux y JPA para gestión de u
 
 ## Stack tecnológico
 
-| Capa | Tecnología |
-|---|---|
-| Web | Spring WebFlux (no bloqueante, `Mono`/`Flux`) |
-| Persistencia | Spring Data JPA + H2 (en memoria) |
-| Caché / Mensajería | Spring Data Redis Reactive |
-| Validación | Jakarta Validation (`@Valid`) |
-| Boilerplate | Lombok |
+| Capa | Tecnología                                           |
+|---|------------------------------------------------------|
+| Web | Spring WebFlux (no bloqueante, `Mono`/`Flux`)        |
+| Persistencia | Spring Data JPA + H2 (mem o fichero, `./data/devdb`) |
+| Caché / Mensajería | Spring Data Redis Reactive                           |
+| Validación | Jakarta Validation (`@Valid`)                        |
+| Boilerplate | Lombok                                               |
 
 ## Arquitectura
 
@@ -300,14 +300,18 @@ También puedes explorar las claves visualmente en **Redis Commander** (`http://
 
 ## Ejecución local
 
-Requiere Java 25. Para datos relacionales usa H2 en memoria (no requiere instalación). Para los endpoints de productos (`/api/products`) es necesario tener Redis corriendo — levántalo con `./docker/01_launch.sh`.
+Requiere Java 25. Para datos relacionales usa H2 en fichero (no requiere instalación). Para los endpoints de productos (`/api/products`) es necesario tener Redis corriendo — levántalo con `./docker/01_launch.sh`.
 
 ```bash
 ./gradlew bootRun
 ```
 
+La base de datos H2 se guarda en memoria o `./data/devdb.mv.db` (creado automáticamente al arrancar; ignorado por git).
+
 La consola H2 está disponible en `http://localhost:8080/h2-console`
-(JDBC URL: `jdbc:h2:mem:devdb`, usuario: `sa`, contraseña vacía).
+(JDBC URL: `jdbc:h2:mem:devdb` ó `jdbc:h2:file:./data/devdb`, usuario: `sa`, contraseña vacía).
+
+> Los datos persisten entre reinicios en el caso de file. Para empezar desde cero borra el fichero `data/devdb.mv.db`.
 
 ## Docker
 

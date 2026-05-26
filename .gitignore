@@ -43,3 +43,5 @@ CLAUDE.md
 ## Docker data
 docker/data/
 
+data/devdb.mv.db
+
