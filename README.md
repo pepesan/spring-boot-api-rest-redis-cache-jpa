@@ -293,7 +293,7 @@ alias rcli='docker exec redis-dev redis-cli'
 rcli KEYS "user:*"
 
 # Vaciar toda la caché de usuarios (sin afectar a los datos en H2)
-rcli DEL $(rcli KEYS "user:*")
+rcli KEYS "user:*" | xargs -r rcli DEL
 ```
 
 También puedes explorar las claves visualmente en **Redis Commander** (`http://localhost:8081`): busca las claves con prefijo `user:` en el panel izquierdo.
